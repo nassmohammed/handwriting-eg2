@@ -1,0 +1,7 @@
+torch>=2.10
+transformers>=5.20
+sentence-transformers>=6.1
+pillow
+wordfreq
+fastapi
+uvicorn[standard]

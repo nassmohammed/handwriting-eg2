@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Handwriting Reader</title>
+<style>
+  :root { --bg:#f6f4ee; --ink:#1b1b1f; --panel:#fff; --muted:#7a776f; --accent:#3a5bd9; --line:#e5e1d6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#17171a; --ink:#ececec; --panel:#222226; --muted:#9a9890; --accent:#7f9bff; --line:#34343a; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.4 -apple-system, "Helvetica Neue", sans-serif; touch-action:none; }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0 12px 0 0; font-weight:600; }
+  header .st { color:var(--muted); font-size:13px; margin-left:auto; }
+  button { background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:6px 12px; font:inherit; cursor:pointer; }
+  button:active { background:var(--line); }
+  label { color:var(--muted); font-size:13px; display:flex; gap:6px; align-items:center; }
+  input[type=range] { width:90px; }
+  #wrap { padding:0 16px 16px; display:grid; gap:12px; }
+  canvas { width:100%; height:52vh; background:var(--panel); border:1px solid var(--line); border-radius:12px; display:block;
+           touch-action:none; cursor:crosshair;
+           background-image: repeating-linear-gradient(transparent 0 59px, var(--line) 59px 60px); }
+  #out { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; min-height:80px; font-size:20px; line-height:1.9; }
+  .w { display:inline-block; position:relative; margin-right:.35em; border-bottom:2px solid transparent; cursor:pointer; }
+  .w.low { border-bottom-color:#e0a030; }
+  .w:hover { background:var(--line); border-radius:4px; }
+  .alts { display:none; position:absolute; left:0; top:100%; background:var(--panel); border:1px solid var(--line); border-radius:8px;
+          box-shadow:0 6px 20px rgba(0,0,0,.15); z-index:5; font-size:15px; line-height:1.3; min-width:150px; }
+  .w.open .alts { display:block; }
+  .alts div { padding:6px 10px; white-space:nowrap; } .alts div:hover { background:var(--line); } .alts span { color:var(--muted); float:right; margin-left:12px; font-size:12px; }
+  #plain { width:100%; border:1px solid var(--line); border-radius:8px; padding:8px; font:inherit; background:var(--panel); color:var(--ink); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Handwriting → text</h1>
+  <button id="clear">Clear</button>
+  <button id="undo">Undo</button>
+  <button id="go">Recognise</button>
+  <label><input type="checkbox" id="auto" checked> auto</label>
+  <label>word gap <input type="range" id="gap" min="0.2" max="1.5" step="0.05" value="0.6"><span id="gapv">0.6</span></label>
+  <label>detail <select id="tokens"><option>70</option><option>140</option><option>280</option></select></label>
+  <span class="st" id="status">draw something</span>
+</header>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="out"></div>
+  <textarea id="plain" rows="2" placeholder="plain text (editable, for copying)"></textarea>
+</div>
+<script>
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const out = document.getElementById('out'), plain = document.getElementById('plain'), status = document.getElementById('status');
+let strokes = [], cur = null, dpr = window.devicePixelRatio || 1, timer = null, result = null;
+
+function resize() {
+  const r = cv.getBoundingClientRect();
+  cv.width = r.width*dpr; cv.height = r.height*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); redraw();
+}
+window.addEventListener('resize', resize);
+function inkColor(){ return getComputedStyle(document.body).getPropertyValue('--ink').trim(); }
+function redraw() {
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle=inkColor();
+  for (const s of strokes) drawStroke(s);
+}
+function drawStroke(s) {
+  for (let i=1;i<s.length;i++) {
+    ctx.lineWidth = 1.5 + 3.5*(s[i][2] ?? 0.5);
+    ctx.beginPath(); ctx.moveTo(s[i-1][0], s[i-1][1]); ctx.lineTo(s[i][0], s[i][1]); ctx.stroke();
+  }
+  if (s.length===1) { ctx.beginPath(); ctx.arc(s[0][0], s[0][1], 1.5, 0, 7); ctx.fillStyle=inkColor(); ctx.fill(); }
+}
+function pos(e){ const r=cv.getBoundingClientRect(); return [e.clientX-r.left, e.clientY-r.top, e.pressure||0.5]; }
+cv.addEventListener('pointerdown', e => {
+  if (e.pointerType==='touch' && e.isPrimary===false) return;
+  cv.setPointerCapture(e.pointerId); cur=[pos(e)]; strokes.push(cur); clearTimeout(timer); e.preventDefault();
+});
+cv.addEventListener('pointermove', e => {
+  if (!cur) return;
+  const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+  for (const ev of evs) cur.push(pos(ev));
+  ctx.strokeStyle=inkColor(); drawStroke(cur.slice(-evs.length-1));
+});
+function up(e){ if(!cur) return; cur=null; schedule(); }
+cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+
+function schedule(){ if (document.getElementById('auto').checked) { clearTimeout(timer); timer=setTimeout(recognise, 700); } }
+document.getElementById('clear').onclick = () => { strokes=[]; redraw(); out.innerHTML=''; plain.value=''; status.textContent='cleared'; };
+document.getElementById('undo').onclick = () => { strokes.pop(); redraw(); schedule(); };
+document.getElementById('go').onclick = recognise;
+document.getElementById('gap').oninput = e => { document.getElementById('gapv').textContent = e.target.value; schedule(); };
+document.getElementById('tokens').onchange = schedule;
+
+async function recognise() {
+  if (!strokes.length) return;
+  status.textContent = 'thinking…';
+  const body = { strokes: strokes.map(s => s.map(p => [Math.round(p[0]*10)/10, Math.round(p[1]*10)/10])),
+                 gap: +document.getElementById('gap').value, tokens: +document.getElementById('tokens').value, topk: 6 };
+  try {
+    const r = await fetch('/recognize', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
+    result = await r.json(); render();
+    const t = result.timing; status.textContent = `${result.words.length} words · ${t.total_ms} ms (embed ${t.embed_ms})`;
+  } catch (err) { status.textContent = 'error: ' + err; }
+}
+function render() {
+  out.innerHTML = ''; let line = -1;
+  for (const w of result.words) {
+    if (w.line !== line) { if (line>=0) out.appendChild(document.createElement('br')); line = w.line; }
+    const el = document.createElement('span'); el.className='w'; el.textContent = w.chosen ?? w.candidates[0].word;
+    const margin = w.candidates[0].score - (w.candidates[1]?.score ?? 0);
+    if (margin < 0.03) el.classList.add('low');
+    const alts = document.createElement('div'); alts.className='alts';
+    for (const c of w.candidates) {
+      const d = document.createElement('div'); d.innerHTML = `${c.word}<span>${c.score.toFixed(3)}</span>`;
+      d.onclick = ev => { ev.stopPropagation(); w.chosen=c.word; render(); }; alts.appendChild(d);
+    }
+    el.appendChild(alts);
+    el.onclick = ev => { ev.stopPropagation(); document.querySelectorAll('.w.open').forEach(x=>x!==el&&x.classList.remove('open')); el.classList.toggle('open'); };
+    out.appendChild(el);
+  }
+  const lines = []; for (const w of result.words) { (lines[w.line] ??= []).push(w.chosen ?? w.candidates[0].word); }
+  plain.value = lines.filter(Boolean).map(l=>l.join(' ')).join('\n');
+}
+document.body.addEventListener('click', () => document.querySelectorAll('.w.open').forEach(x=>x.classList.remove('open')));
+resize();
+</script>
+</body>
+</html>
